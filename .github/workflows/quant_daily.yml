@@ -1,10 +1,10 @@
 name: 퀀트 스크리너 매일 자동 실행
  
 on:
-  # ── 매일 밤 11시 (KST = UTC+9 → UTC 14:00) ──
+  # ── 매일 밤 7시 (KST = UTC+9 → UTC 14:00) ──
   schedule:
-    - cron: '0 14 * * 1-5'   # 월~금 평일만 (주말 제외)
- 
+    
+    - cron: '0 10 * * 1-5'   # 오후 7시 KST
   # ── 수동 실행 버튼 (테스트용) ──
   workflow_dispatch:
     inputs:
