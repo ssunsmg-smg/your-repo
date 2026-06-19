@@ -46,35 +46,50 @@ jobs:
           ls -la 매매신호_KR_*.json
 
       # ⑤ KIS 설정파일 생성 (secrets에서 읽어와 매 실행마다 생성)
+      #    ★ 바스켓(포트폴리오) 단위 매매 — 보유 종목 전체 합산 수익률로 판단
       #    ★ 모의투자 단계에서는 KIS_IS_REAL 시크릿을 "false"로 등록
       - name: KIS 설정파일 생성
         run: |
           cat > kis_config.json << EOF
           {
-            "app_key":          "${{ secrets.KIS_APP_KEY }}",
-            "app_secret":       "${{ secrets.KIS_APP_SECRET }}",
-            "account_no":       "${{ secrets.KIS_ACCOUNT_NO }}",
-            "is_real":          ${{ secrets.KIS_IS_REAL }},
-            "max_position_pct": 5.0,
-            "max_daily_trades": 10,
-            "stop_loss_pct":    8.0,
-            "take_profit_pct":  20.0
+            "app_key":             "${{ secrets.KIS_APP_KEY }}",
+            "app_secret":          "${{ secrets.KIS_APP_SECRET }}",
+            "account_no":          "${{ secrets.KIS_ACCOUNT_NO }}",
+            "is_real":             ${{ secrets.KIS_IS_REAL }},
+            "max_daily_trades":    10,
+            "stop_loss_pct":       5.0,
+            "take_profit_min_pct": 1.0,
+            "take_profit_max_pct": 20.0,
+            "base_invest_amount":  10000000,
+            "reinvest_mode":       true
           }
           EOF
           echo "▶ KIS 설정파일 생성 완료 (is_real=${{ secrets.KIS_IS_REAL }})"
 
-      # ⑥ KIS 자동매매 실행 (스크리닝 없이, 저장된 신호만 사용)
+      # ⑥ 텔레그램 설정파일 생성 (장중 매수·매도·수익률 알림용)
+      - name: 텔레그램 설정파일 생성
+        run: |
+          cat > telegram_config.json << EOF
+          {
+            "bot_token": "${{ secrets.TELEGRAM_BOT_TOKEN }}",
+            "chat_id":   "${{ secrets.TELEGRAM_CHAT_ID }}"
+          }
+          EOF
+          echo "▶ 텔레그램 설정파일 생성 완료"
+
+      # ⑦ KIS 자동매매 실행 (스크리닝 없이, 저장된 신호만 사용)
+      #    --no-telegram 제거 → 매수/매도/수익률/재투자풀 알림이 텔레그램으로 전송됨
       - name: KIS 자동매매 실행
         run: |
-          python quant_screener_v36.py --trade-only --no-telegram --output-dir .
+          python quant_screener_v36.py --trade-only --output-dir .
           echo "▶ 실행 완료"
 
-      # ⑦ kis_config.json 삭제 (아티팩트에 절대 포함되지 않도록)
-      - name: KIS 설정파일 삭제
+      # ⑧ 설정파일 삭제 (아티팩트에 절대 포함되지 않도록)
+      - name: 설정파일 삭제
         if: always()
-        run: rm -f kis_config.json
+        run: rm -f kis_config.json telegram_config.json
 
-      # ⑧ 거래로그 아티팩트 저장 (90일 보관 — 매매 기록은 길게)
+      # ⑨ 거래로그 + 재투자풀 상태 아티팩트 저장 (90일 보관)
       - name: 📊 거래로그 저장
         if: always()
         uses: actions/upload-artifact@v4
