@@ -1,10 +1,10 @@
 name: 퀀트 스크리너 매일 자동 실행
- 
+
 on:
-  # ── 매일 밤 7시 (KST = UTC+9 → UTC 14:00) ──
+  # ── 매일 오후 7시 (KST = UTC+9 → UTC 10:00) ──
   schedule:
-    
-    - cron: '0 10 * * 1-5'   # 오후 7시 KST
+    - cron: '0 10 * * 1-5'   # 월~금 평일만 (주말 제외)
+
   # ── 수동 실행 버튼 (테스트용) ──
   workflow_dispatch:
     inputs:
@@ -12,46 +12,46 @@ on:
         description: '범위 선택 (1=100개 / 2=300개 / 3=전체)'
         required: false
         default: '2'
- 
+
 jobs:
   quant-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 90
- 
+
     steps:
       # ① 레포지터리 체크아웃
       - name: 레포지터리 체크아웃
         uses: actions/checkout@v4
- 
+
       # ② Python 설치
       - name: Python 3.11 설치
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
- 
+
       # ③ 패키지 설치
       - name: 패키지 설치
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
- 
+
       # ④ DART API 키 파일 생성
       - name: DART API 키 설정
         run: echo "${{ secrets.DART_API_KEY }}" > dart_api.txt
- 
-      # ⑤ 퀀트 스크리너 실행 (Drive 업로드 없이 실행)
+
+      # ⑤ 퀀트 스크리너 실행 (v36 — 한국 전용, --market 옵션 없음)
       - name: 퀀트 스크리너 실행
         run: |
           SCOPE="${{ github.event.inputs.scope || '2' }}"
           echo "▶ 스크리닝 범위: ${SCOPE} (1=100개 / 2=300개 / 3=전체)"
-          python quant_screener_v33.py \
+          python quant_screener_v36.py \
             --auto \
-            --market 1 \
             --scope "${SCOPE}" \
-            --no-cache
+            --no-cache \
+            --no-telegram
           echo "▶ 실행 완료"
- 
+
       # ⑥ 엑셀 + JSON 아티팩트 저장 (30일 보관)
       - name: 📊 결과 파일 저장
         if: always()
@@ -62,3 +62,4 @@ jobs:
             quant_*.xlsx
             매매신호_*.json
           retention-days: 30
+          if-no-files-found: warn
