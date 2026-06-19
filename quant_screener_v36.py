@@ -1002,10 +1002,15 @@ class KISAutoTrader:
         executed = []
 
         # ① 포지션 손절·익절 점검
+        # ── KIS Rate Limit: 모의투자 초당 5건 / 실전 초당 20건 (운영사 공지 기준) ──
+        # 호출당(현재가조회 + 주문) 2건이 나갈 수 있으므로 넉넉하게 종목당 1.2초 간격
+        api_delay = 0.4 if self.is_real else 1.2
+
         print(f"\n  [KIS] 포지션 점검 ({len(self.positions)}개)...")
         for code, pos in list(self.positions.items()):
             cur = self.get_current_price(code)
             if cur <= 0:
+                time.sleep(api_delay)
                 continue
             ret = (cur - pos["avg_price"]) / pos["avg_price"]
 
@@ -1026,6 +1031,8 @@ class KISAutoTrader:
                     executed.append({"action": "TAKE_PROFIT", "code": code,
                                      "ret_pct": round(ret * 100, 1)})
 
+            time.sleep(api_delay)   # 다음 종목 조회 전 대기 (Rate Limit 방지)
+
         # ② 신규 매수
         if "매매시그널" not in df_signals.columns:
             return executed
@@ -1042,6 +1049,7 @@ class KISAutoTrader:
 
             cur = self.get_current_price(str_code)
             if cur <= 0:
+                time.sleep(api_delay)
                 continue
 
             qty = max(1, int(total_capital * max_pos / cur))
@@ -1055,7 +1063,7 @@ class KISAutoTrader:
             if r.get("success"):
                 executed.append({"action": "BUY", "code": str_code,
                                   "qty": qty, "price": r.get("price")})
-            time.sleep(0.5)   # API 과부하 방지
+            time.sleep(api_delay)   # 현재가조회+주문 2건 소진했으므로 더 길게 대기
 
         print(f"  [KIS] 자동매매 완료: {len(executed)}건")
         return executed
