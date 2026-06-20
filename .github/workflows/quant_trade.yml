@@ -46,7 +46,8 @@ jobs:
           ls -la 매매신호_KR_*.json
 
       # ⑤ KIS 설정파일 생성 (secrets에서 읽어와 매 실행마다 생성)
-      #    ★ 바스켓(포트폴리오) 단위 매매 — 보유 종목 전체 합산 수익률로 판단
+      #    ★ 실전 확정: 분기리밸런싱 top20 + 시총가중0.7 + 눌림목 (스크리닝 단계 적용)
+      #    ★ 종목별 개별 판단 — 보유종목 각각 손절(-7%)/익절(+2~25%) 독립 결정
       #    ★ 모의투자 단계에서는 KIS_IS_REAL 시크릿을 "false"로 등록
       - name: KIS 설정파일 생성
         run: |
@@ -57,11 +58,12 @@ jobs:
             "account_no":          "${{ secrets.KIS_ACCOUNT_NO }}",
             "is_real":             ${{ secrets.KIS_IS_REAL }},
             "max_daily_trades":    10,
-            "stop_loss_pct":       5.0,
-            "take_profit_min_pct": 1.0,
-            "take_profit_max_pct": 20.0,
+            "stop_loss_pct":       7.0,
+            "take_profit_min_pct": 2.0,
+            "take_profit_max_pct": 25.0,
             "base_invest_amount":  10000000,
-            "reinvest_mode":       true
+            "reinvest_mode":       true,
+            "buy_top_n":           20
           }
           EOF
           echo "▶ KIS 설정파일 생성 완료 (is_real=${{ secrets.KIS_IS_REAL }})"
