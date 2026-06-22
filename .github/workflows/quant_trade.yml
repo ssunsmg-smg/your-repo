@@ -83,7 +83,7 @@ jobs:
       #    --no-telegram 제거 → 매수/매도/수익률/재투자풀 알림이 텔레그램으로 전송됨
       - name: KIS 자동매매 실행
         run: |
-          python quant_screener_v36.py --trade-only --output-dir .
+          python quant_screener_v41f.py --trade-only --output-dir .
           echo "▶ 실행 완료"
 
       # ⑧ 설정파일 삭제 (아티팩트에 절대 포함되지 않도록)

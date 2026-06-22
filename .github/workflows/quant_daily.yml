@@ -49,7 +49,7 @@ jobs:
         run: |
           SCOPE="${{ github.event.inputs.scope || '2' }}"
           echo "▶ 스크리닝 범위: ${SCOPE}"
-          python quant_screener_v36.py \
+          python quant_screener_v41f.py \
             --auto \
             --scope "${SCOPE}" \
             --no-cache \
