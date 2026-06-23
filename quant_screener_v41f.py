@@ -2185,8 +2185,8 @@ class KISAutoTrader:
             row = df_signals.loc[code]
 
             cur = self.get_current_price(str_code)
+            time.sleep(api_delay)   # 현재가조회 직후 대기 — 바로 이어지는 주문 호출과의 간격 확보
             if cur <= 0:
-                time.sleep(api_delay)
                 continue
 
             qty = max(1, int(per_stock_budget / cur))
