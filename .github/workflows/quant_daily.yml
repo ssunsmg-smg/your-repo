@@ -1,12 +1,12 @@
 name: 퀀트 스크리너 매일 자동 실행 (스크리닝 전용)
 
 on:
-  # ── 매일 오후 7시 (KST = UTC+9 → UTC 10:00) ──
-  # 정시(00분)는 GitHub Actions 부하가 몰려 지연/드롭될 수 있어 07분으로 분산
-  schedule:
-    - cron: '7 10 * * 1-5'   # 월~금 평일만 (주말 제외)
+  # ── 스케줄(cron) 트리거 제거됨 ──
+  # GitHub Actions의 schedule 트리거는 정시 실행을 보장하지 않아
+  # (특히 정각/특정 분대는 트래픽 몰려 지연 빈번) 외부 cron 서비스(cron-job.org)가
+  # 매일 KST 오후 7시 정각에 GitHub API로 이 워크플로를 직접 트리거합니다.
 
-  # ── 수동 실행 버튼 (테스트용) ──
+  # ── 수동 실행 버튼 (테스트/비상용) ──
   workflow_dispatch:
     inputs:
       scope:
