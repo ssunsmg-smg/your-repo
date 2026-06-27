@@ -1,0 +1,20 @@
+# ── 절대 커밋되면 안 되는 자격증명 파일 ──
+kis_config.json
+telegram_config.json
+dart_api.txt
+
+# ── 파이썬 캐시/임시파일 ──
+__pycache__/
+*.pyc
+.cache/
+
+# ── 로컬 전용 스크래치/테스트 파일 (필요시 주석 해제해서 올려도 무방) ──
+test_yf.py
+test_yf_diag.py
+test_yf_multi.py
+exe_maker.py
+사용안함/
+
+# ── 로그/결과물 (용량 관리 — 필요하면 빼고 커밋해도 됨) ──
+logs/
+*.xlsx
