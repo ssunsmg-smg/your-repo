@@ -1,0 +1,86 @@
+name: 장중 L1+L2 시그널 체크 (분봉 게이트 → KIS 매수)
+
+on:
+  # ── 스케줄(cron) 트리거 없음 ──
+  # quant_trade.yml과 동일한 이유: GitHub Actions schedule은 정시 보장이 안 됨.
+  # VPS(런던, LD4)의 시스템 cron이 09:05~14:50 사이 10~15분 간격으로
+  # 이 워크플로우를 GitHub API로 직접 트리거한다.
+  # (장중에만 의미 있으므로 VPS crontab에서 평일 09:00~15:00 KST 구간만 등록)
+
+  workflow_dispatch:   # 수동 실행 버튼 (테스트용)
+
+permissions:
+  contents: write   # pending 상태 파일을 트레이드 로그에 커밋하기 위해 필요 (선택)
+
+jobs:
+  signal-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 레포지터리 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 패키지 설치
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: KIS 설정파일 생성
+        run: |
+          cat > kis_config.json << EOF
+          {
+            "app_key":             "${{ secrets.KIS_APP_KEY }}",
+            "app_secret":          "${{ secrets.KIS_APP_SECRET }}",
+            "account_no":          "${{ secrets.KIS_ACCOUNT_NO }}",
+            "is_real":             ${{ secrets.KIS_IS_REAL }},
+            "max_daily_trades":    10,
+            "stop_loss_pct":       7.0,
+            "take_profit_min_pct": 2.0,
+            "take_profit_max_pct": 25.0,
+            "base_invest_amount":  10000000,
+            "reinvest_mode":       true,
+            "buy_top_n":           20
+          }
+          EOF
+
+      - name: 장중 시그널 체크 + 매수 실행
+        run: |
+          python quant_signal_check.py --output-dir .
+          echo "▶ 실행 완료"
+
+      - name: 설정파일 삭제
+        if: always()
+        run: rm -f kis_config.json
+
+      # pending 상태(trades/intraday_pending_*.json)와
+      # 누적 분봉/게이트 로그(data/intraday/)를 다음 실행에서도 이어 쓰고
+      # 나중에 백테스트 데이터로 쓰려면 레포에 커밋해서 영속화
+      - name: pending 상태 + 누적 데이터 커밋
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add trades/intraday_pending_*.json 2>/dev/null || true
+          git add data/intraday/ 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "▶ 변경사항 없음"
+          else
+            git commit -m "장중 시그널 pending 상태 + 분봉/게이트 로그 갱신 ($(date '+%Y-%m-%d %H:%M'))"
+            git push
+          fi
+
+      - name: 거래로그 저장
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 시그널체크로그-${{ github.run_number }}-${{ github.run_id }}
+          path: trades/*.json
+          retention-days: 30
+          if-no-files-found: warn
