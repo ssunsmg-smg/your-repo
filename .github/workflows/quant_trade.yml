@@ -9,6 +9,9 @@ on:
   # ── 수동 실행 버튼 (테스트/비상용) ──
   workflow_dispatch:
 
+permissions:
+  contents: write   # 거래상태(positions/reinvest_pool)를 레포에 커밋하기 위해 필요
+
 jobs:
   kis-trade:
     runs-on: ubuntu-latest
@@ -45,7 +48,27 @@ jobs:
           echo "▶ 신호 파일 준비 완료:"
           ls -la 매매신호_KR_*.json
 
-      # ⑤ KIS 설정파일 생성 (secrets에서 읽어와 매 실행마다 생성)
+      # ⑤ 직전 실행에서 커밋해둔 거래상태(보유포지션/재투자풀) 복원
+      #    → trade_state/ (git 추적) 에서 trades/ (스크립트가 읽는 경로) 로 복사
+      #    브로커 잔고 동기화(sync_positions_from_broker)가 메인 안전장치이고,
+      #    이건 그게 실패했을 때(KIS 잔고조회 오류 등) 쓰는 2차 안전장치
+      - name: 거래상태 복원
+        run: |
+          mkdir -p trades trade_state
+          if [ -f trade_state/positions.json ]; then
+            cp trade_state/positions.json trades/positions.json
+            echo "▶ positions.json 복원 완료"
+          else
+            echo "▶ 저장된 positions.json 없음 (최초 실행 또는 보유종목 없었음)"
+          fi
+          if [ -f trade_state/reinvest_pool.json ]; then
+            cp trade_state/reinvest_pool.json trades/reinvest_pool.json
+            echo "▶ reinvest_pool.json 복원 완료"
+          else
+            echo "▶ 저장된 reinvest_pool.json 없음 (최초 실행)"
+          fi
+
+      # ⑥ KIS 설정파일 생성 (secrets에서 읽어와 매 실행마다 생성)
       #    ★ 실전 확정: 분기리밸런싱 top20 + 시총가중0.7 + 눌림목 (스크리닝 단계 적용)
       #    ★ 종목별 개별 판단 — 보유종목 각각 손절(-7%)/익절(+2~25%) 독립 결정
       #    ★ 모의투자 단계에서는 KIS_IS_REAL 시크릿을 "false"로 등록
@@ -68,7 +91,7 @@ jobs:
           EOF
           echo "▶ KIS 설정파일 생성 완료 (is_real=${{ secrets.KIS_IS_REAL }})"
 
-      # ⑥ 텔레그램 설정파일 생성 (장중 매수·매도·수익률 알림용)
+      # ⑦ 텔레그램 설정파일 생성 (장중 매수·매도·수익률 알림용)
       - name: 텔레그램 설정파일 생성
         run: |
           cat > telegram_config.json << EOF
@@ -79,19 +102,40 @@ jobs:
           EOF
           echo "▶ 텔레그램 설정파일 생성 완료"
 
-      # ⑦ KIS 자동매매 실행 (스크리닝 없이, 저장된 신호만 사용)
+      # ⑧ KIS 자동매매 실행 (스크리닝 없이, 저장된 신호만 사용)
       #    --no-telegram 제거 → 매수/매도/수익률/재투자풀 알림이 텔레그램으로 전송됨
       - name: KIS 자동매매 실행
         run: |
           python quant_screener_v41f.py --trade-only --output-dir .
           echo "▶ 실행 완료"
 
-      # ⑧ 설정파일 삭제 (아티팩트에 절대 포함되지 않도록)
+      # ⑨ 설정파일 삭제 (아티팩트에 절대 포함되지 않도록)
       - name: 설정파일 삭제
         if: always()
         run: rm -f kis_config.json telegram_config.json
 
-      # ⑨ 거래로그 + 재투자풀 상태 아티팩트 저장 (90일 보관)
+      # ⑩ 거래상태(보유포지션/재투자풀) 다음 실행을 위해 레포에 커밋
+      #    브로커 잔고조회가 실패하는 날을 대비한 2차 안전장치.
+      #    ⚠ 계좌 보유종목·수량이 git 히스토리에 평문으로 남음 — 레포가
+      #      private인지 다시 한번 확인할 것.
+      - name: 거래상태 커밋
+        if: always()
+        run: |
+          mkdir -p trade_state
+          cp trades/positions.json trade_state/positions.json 2>/dev/null || echo "▶ positions.json 없음 (보유종목 0개)"
+          cp trades/reinvest_pool.json trade_state/reinvest_pool.json 2>/dev/null || echo "▶ reinvest_pool.json 없음"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add trade_state/
+          if git diff --staged --quiet; then
+            echo "▶ 변경사항 없음 — 커밋 스킵"
+          else
+            git commit -m "거래상태 갱신 ${{ github.run_number }} ($(date '+%Y-%m-%d %H:%M'))"
+            git push
+          fi
+
+      # ⑪ 거래로그 + 재투자풀 상태 아티팩트 저장 (90일 보관)
       - name: 📊 거래로그 저장
         if: always()
         uses: actions/upload-artifact@v4
