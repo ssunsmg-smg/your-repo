@@ -86,6 +86,9 @@ except ImportError:
 warnings.filterwarnings("ignore")
 
 VERSION   = "v6.3.0"
+# [패치] 백테스트 현실화: 거래비용(수수료+세금+슬리피지) 모델 추가,
+#        생존편향 경고 문구 자동 출력 (BacktestEngine.__init__ / run_walkforward /
+#        run_basket_simulation 참고). 비용 없이 옛 결과와 비교하려면 --bt-no-cost.
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, ".cache")
 LOG_DIR   = os.path.join(BASE_DIR, "logs")
@@ -256,7 +259,9 @@ class BacktestEngine:
                  top_n: int = 20, initial_capital: float = 100_000_000,
                  markets: dict = None, cap_weighted_momentum: bool = False,
                  cap_weight_strength: float = 0.5,
-                 dart_client=None):
+                 dart_client=None,
+                 fee_pct: float = 0.015, tax_pct: float = 0.18,
+                 slippage_pct: float = 0.20):
         self.universe   = universe_codes
         self.start      = pd.Timestamp(start)
         self.end        = pd.Timestamp(end) if end else pd.Timestamp.today()
@@ -283,6 +288,32 @@ class BacktestEngine:
         self._shares_outstanding    = None   # {code: 발행주식수} 캐시
         # DART 발행주식수 수집용 (스크리닝 단계와 동일한 DartClient 재사용 — 캐시도 7일 공유)
         self.dart_client = dart_client
+
+        # ── 거래비용 모델 (수수료 + 매도세 + 슬리피지) ──
+        # 백테스트가 실제 매매와 다르게 "비용 0"으로 계산되면 수익률이 비현실적으로
+        # 부풀려진다. 편도(매수/매도 각각) 비용을 분리해서 적용한다.
+        #   매수비용 = 수수료
+        #   매도비용 = 수수료 + 거래세(코스피/코스닥 매도시에만 부과)
+        #   슬리피지는 매수·매도 양쪽에 각각 적용 (체결가가 의도한 가격보다 불리하게 밀리는 효과 근사)
+        self.fee_pct      = max(0.0, fee_pct)        # 편도 수수료(%), 기본 0.015%
+        self.tax_pct      = max(0.0, tax_pct)        # 매도세(%), 기본 0.18% (2025년 기준 코스피/코스닥 공통)
+        self.slippage_pct = max(0.0, slippage_pct)   # 편도 슬리피지(%), 기본 0.20%
+        self.buy_cost_pct  = self.fee_pct + self.slippage_pct
+        self.sell_cost_pct = self.fee_pct + self.tax_pct + self.slippage_pct
+        self._cost_warning_printed = False
+
+    def _print_cost_assumptions(self):
+        """거래비용 가정과 생존편향 한계를 1회 출력 (결과를 그대로 믿지 않도록)."""
+        if self._cost_warning_printed:
+            return
+        self._cost_warning_printed = True
+        rt = self.buy_cost_pct + self.sell_cost_pct
+        print(f"  [백테스트] 거래비용 적용: 매수 -{self.buy_cost_pct:.3f}% / "
+              f"매도 -{self.sell_cost_pct:.3f}% (수수료{self.fee_pct:.3f}%+세금{self.tax_pct:.2f}%"
+              f"+슬리피지{self.slippage_pct:.2f}%) → 왕복 -{rt:.3f}%/회 차감")
+        print(f"  ⚠ [한계] 본 백테스트의 종목 유니버스는 '현재 시점' 시가총액 상위 종목으로 구성되어 "
+              f"있어 과거 시점에 상장폐지·합병된 종목은 표본에서 빠집니다(생존편향). "
+              f"실제 결과는 본 수치보다 낮을 수 있습니다.")
 
     def _load_shares_outstanding(self) -> dict:
         """
@@ -779,6 +810,7 @@ class BacktestEngine:
 
     def run_walkforward(self, price_df: pd.DataFrame) -> dict:
         """Walk-forward 검증 실행"""
+        self._print_cost_assumptions()
         print(f"\n  [백테스트] Walk-forward 시작")
         print(f"     기간: {self.start.date()} ~ {self.end.date()}")
         print(f"     IS: {self.is_months}개월 / OOS: {self.oos_months}개월 / 상위: {self.top_n}종목")
@@ -812,7 +844,9 @@ class BacktestEngine:
                 continue
 
             port_ret  = oos_rets.mean(axis=1)
-            period_r  = float((1 + port_ret).cumprod().iloc[-1] - 1) * 100
+            gross_period_r = float((1 + port_ret).cumprod().iloc[-1] - 1) * 100
+            # 매 리밸런싱마다 보유종목을 전량 교체(매도+매수)한다고 가정 → 왕복비용 1회 차감
+            period_r  = gross_period_r - (self.buy_cost_pct + self.sell_cost_pct)
             bench_r   = self._benchmark_return(rebal_date, oos_end)
             oos_sharpe= self._sharpe(port_ret)
 
@@ -883,6 +917,8 @@ class BacktestEngine:
                 "과적합판단":  overfit,
                 "초기자본(원)":self.capital,
                 "최종자본(원)":round(portfolio_value),
+                "왕복거래비용(%)": round(self.buy_cost_pct + self.sell_cost_pct, 3),
+                "주의":        "유니버스가 현재 시총 상위 종목 기준 → 생존편향 있음, 실제는 더 낮을 수 있음",
             },
             "equity_curve": equity_curve,
             "period_log":   period_log,
@@ -938,6 +974,7 @@ class BacktestEngine:
         take_profit_max_pct = abs(take_profit_max_pct)
 
         print(f"\n  [백테스트-바스켓] 포트폴리오 단위 시뮬레이션 시작")
+        self._print_cost_assumptions()
         print(f"     기간: {self.start.date()} ~ {self.end.date()}")
         print(f"     손절: -{stop_loss_pct:.1f}% | 익절: +{take_profit_min_pct:.1f}%~+{take_profit_max_pct:.1f}%")
         print(f"     재평가 주기(보유없을때): {rescore_freq_days}영업일 | 상위: {self.top_n}종목")
@@ -979,7 +1016,7 @@ class BacktestEngine:
 
                 if basket_ret <= -stop or (tp_min <= basket_ret <= tp_max):
                     action = "STOP_LOSS" if basket_ret <= -stop else "TAKE_PROFIT"
-                    capital = value_sum   # 회수금 전체가 다음 매수 자본(재투자)
+                    capital = value_sum * (1 - self.sell_cost_pct / 100)   # 매도비용 차감 후 재투자
                     trade_log.append({
                         "date": str(today.date()), "action": action,
                         "codes": list(positions.keys()),
@@ -1010,6 +1047,7 @@ class BacktestEngine:
 
             selected = scores.nlargest(effective_top_n).index.tolist()
             per_stock_budget = capital / max(len(selected), 1)
+            effective_budget = per_stock_budget * (1 - self.buy_cost_pct / 100)  # 매수비용 차감 후 실제 매수액
 
             new_positions = {}
             for code in selected:
@@ -1018,7 +1056,7 @@ class BacktestEngine:
                 px = price_df.at[today, code]
                 if pd.isna(px) or px <= 0:
                     continue
-                qty = per_stock_budget / px   # 백테스트는 가상 비율 수량(소수 허용)
+                qty = effective_budget / px   # 백테스트는 가상 비율 수량(소수 허용), 매수비용 차감 반영
                 new_positions[code] = {"avg_price": float(px), "qty": qty}
 
             if new_positions:
@@ -1071,6 +1109,8 @@ class BacktestEngine:
                 "평균거래수익(%)": round(avg_ret_per_trade, 2),
                 "초기자본(원)":  self.capital,
                 "최종자본(원)":  round(final_capital),
+                "왕복거래비용(%)": round(self.buy_cost_pct + self.sell_cost_pct, 3),
+                "주의":          "유니버스가 현재 시총 상위 종목 기준 → 생존편향 있음, 실제는 더 낮을 수 있음",
             },
             "equity_curve": equity_curve,
             "trade_log":    trade_log,
@@ -1714,8 +1754,13 @@ class KISAutoTrader:
         # None이면 아직 초기화 안 됨 → execute_signals에서 base_invest_amount로 첫 세팅
         self._reinvest_pool   = None
         self._reinvest_path   = os.path.join(TRADE_DIR, "reinvest_pool.json")
+        # 보유 포지션도 reinvest_pool과 동일하게 파일로 영속화.
+        # (이게 없으면 매 실행 프로세스가 "보유 0종목"으로 리셋돼서, 어제 산 종목을
+        #  오늘 또 신규매수로 잘못 판단하고, 손절/익절 판단도 그 종목엔 작동하지 않음)
+        self._positions_path  = os.path.join(TRADE_DIR, "positions.json")
         self._load_config()
         self._load_reinvest_pool()
+        self._load_positions()
 
     # ── 설정 로드 ──
     def _load_config(self):
@@ -1782,6 +1827,68 @@ class KISAutoTrader:
                 }, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"  ⚠ 재투자 풀 저장 오류: {e}")
+
+    # ── 보유 포지션 영속 저장/로드 ──
+    def _load_positions(self):
+        """직전 실행에서 저장된 보유 포지션을 로드 (프로세스가 바뀌어도 보유내역 유지)."""
+        try:
+            if os.path.exists(self._positions_path):
+                with open(self._positions_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.positions = data.get("positions", {})
+                if self.positions:
+                    print(f"  [포지션] 로컬 저장분 로드: {len(self.positions)}종목 "
+                          f"({', '.join(self.positions.keys())})")
+        except Exception as e:
+            print(f"  ⚠ 포지션 로드 오류: {e}")
+
+    def _save_positions(self):
+        """현재 self.positions를 파일에 저장 (다음 프로세스 실행에서도 이어서 사용)."""
+        try:
+            os.makedirs(TRADE_DIR, exist_ok=True)
+            with open(self._positions_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "positions": self.positions,
+                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"  ⚠ 포지션 저장 오류: {e}")
+
+    def sync_positions_from_broker(self):
+        """
+        실행 시작 시 KIS 실제 잔고(get_balance의 holdings)를 조회해서
+        self.positions를 '진짜 계좌 상태'로 덮어씀.
+
+        로컬 positions.json만 믿으면, 그 파일이 유실되거나(예: 다른 머신/컨테이너에서
+        실행) 수동으로 따로 매매한 경우 실제 보유와 어긋날 수 있다. 브로커 응답을
+        항상 최종 진실로 삼고, 브로커 조회가 실패했을 때만 로컬 파일 값을 그대로 둔다.
+        """
+        if not self._is_configured():
+            return
+        bal = self.get_balance()
+        holdings = bal.get("holdings")
+        if holdings is None:
+            print("  ⚠ 잔고 조회 실패 → 로컬 positions.json 값을 그대로 사용")
+            return
+
+        broker_positions = {}
+        for h in holdings:
+            code = str(h.get("pdno", "")).strip()
+            qty  = int(float(h.get("hldg_qty", 0) or 0))
+            if not code or qty <= 0:
+                continue
+            avg_price = float(h.get("pchs_avg_pric", 0) or 0)
+            # 매수일자는 브로커가 안 주므로, 기존 로컬 기록이 있으면 그대로 유지
+            buy_date = self.positions.get(code, {}).get("buy_date",
+                        datetime.today().strftime("%Y-%m-%d"))
+            broker_positions[code] = {"qty": qty, "avg_price": round(avg_price),
+                                       "buy_date": buy_date}
+
+        if broker_positions != self.positions:
+            print(f"  [포지션] 브로커 실잔고로 동기화: {len(broker_positions)}종목 "
+                  f"(로컬 기록 {len(self.positions)}종목 → 교체)")
+        self.positions = broker_positions
+        self._save_positions()
 
     @property
     def base_url(self):
@@ -2001,6 +2108,7 @@ class KISAutoTrader:
                 del self.positions[code]
             else:
                 self.positions[code]["qty"] = new_qty
+        self._save_positions()   # 주문 직후 즉시 영속화 — 프로세스가 끝나도 보유내역 유지
 
     def _save_log(self, code, order_type, qty, price, order_no, reason):
         """거래 로그를 trades_KR_YYYYMMDD.json 에 누적 저장"""
@@ -2085,6 +2193,10 @@ class KISAutoTrader:
         if not self._is_configured():
             print("  ⚠ KIS 앱키 미설정 → 자동매매 중단")
             return []
+
+        # 실행마다 새 프로세스로 떠도(예: GitHub Actions) 실제 보유내역을 알 수 있도록
+        # 브로커 잔고를 먼저 조회해 self.positions를 진짜 계좌 상태로 맞춘다.
+        self.sync_positions_from_broker()
 
         # kis_config.json에 실수로 음수가 입력돼도(예: -3.0) 항상 절댓값으로 처리
         stop      = abs(self.cfg.get("stop_loss_pct", 7.0)) / 100
@@ -7454,6 +7566,14 @@ def parse_args():
     p.add_argument("--bt-end",       type=str,   default="")
     p.add_argument("--bt-is",        type=int,   default=12, help="IS 개월수")
     p.add_argument("--bt-oos",       type=int,   default=3,  help="OOS 개월수")
+    p.add_argument("--bt-fee-pct", type=float, default=0.015,
+                   help="편도 거래수수료(%%, 기본 0.015%%)")
+    p.add_argument("--bt-tax-pct", type=float, default=0.18,
+                   help="매도 시 거래세(%%, 기본 0.18%% — 2025년 코스피/코스닥 공통)")
+    p.add_argument("--bt-slippage-pct", type=float, default=0.20,
+                   help="편도 슬리피지(%%, 기본 0.20%% — 체결가가 불리하게 밀리는 효과 근사)")
+    p.add_argument("--bt-no-cost", action="store_true",
+                   help="거래비용을 0으로 두고 실행 (예전 버전과 비교용, 실전 추정에는 쓰지 말 것)")
     p.add_argument("--bt-cap-weight", action="store_true",
                    help="백테스트 모멘텀에 시가총액 가중 적용 (대형주 쏠림장 대응)")
     p.add_argument("--bt-cap-strength", type=float, default=0.5,
@@ -7531,6 +7651,9 @@ def _run_backtest(args):
         cap_weighted_momentum=getattr(args, "bt_cap_weight", False),
         cap_weight_strength=getattr(args, "bt_cap_strength", 0.5),
         dart_client=dart_for_bt,
+        fee_pct=0.0 if getattr(args, "bt_no_cost", False) else getattr(args, "bt_fee_pct", 0.015),
+        tax_pct=0.0 if getattr(args, "bt_no_cost", False) else getattr(args, "bt_tax_pct", 0.18),
+        slippage_pct=0.0 if getattr(args, "bt_no_cost", False) else getattr(args, "bt_slippage_pct", 0.20),
     )
     price_df = bt.load_price_data()
     if price_df.empty:
@@ -7729,6 +7852,7 @@ def _run_monitor(args):
     print("\n  [모니터] 모니터링 전용 실행")
     monitor = MonitorEngine()
     trader  = KISAutoTrader()
+    trader.sync_positions_from_broker()   # 실제 계좌 잔고 기준으로 보유종목 표시
     monitor.notify_positions(trader)
     monitor.send(f"ℹ {trader.status_summary()}")
 
